@@ -27,13 +27,14 @@ fails if any of them stops working.
 
 ```sh
 ./scripts/build-linux-amd64.sh    # dist/linux-amd64/ffmpeg
+./scripts/build-macos.sh          # dist/darwin-arm64/ffmpeg (or darwin-amd64)
 ```
 
-The output is always one fully static executable (glibc linked in): that is
-the only shape the product ships. `rerinku-onboard` embeds it
-(`make prepare-embedded-ffmpeg` looks in `../rerinku-ffmpeg/dist/linux-amd64/`)
-and seeds it into `~/.rerinku/bin/ffmpeg` on every start; the server never
-uses a system ffmpeg.
+Linux output is one fully static executable (glibc linked in). macOS output
+statically links the codec libraries and only dynamically links Apple system
+libraries. `rerinku-onboard` embeds the matching platform build and seeds it
+into `~/.rerinku/bin/ffmpeg` on every start; the server never uses a system
+ffmpeg.
 
 Switches:
 
@@ -43,15 +44,20 @@ Switches:
 | `WITH_ALSA=0` | Drop the `alsa` input device (default on: built from a static alsa-lib). Without it UVC cameras with a USB microphone go video-only, and because the device still advertises audio, WebRTC start waits 8 s for the missing audio track. |
 | `DISABLE_ASM=1` | No assembly (only for hosts without `nasm`; several times slower) |
 | `SMOKE=0` | Skip the functional smoke test after the build |
+| `FORCE_SMOKE=1` | Re-run the smoke test even when build inputs are unchanged |
 | `JOBS=n` | Parallelism |
 
 Switches are reflected in the variant name (`linux-amd64-x265`, `linux-amd64-noalsa`, ...).
 Dependencies are rebuilt automatically when their configure arguments change.
-The build fails if the result is not statically linked.
+The Linux build fails if the result is not fully statically linked.
 
 Host requirements (Debian): `build-essential nasm pkg-config curl git cmake
 ninja-build python3 bc xz-utils`, plus `libstdc++-14-dev` for `WITH_X265=1`
 and a full `ffmpeg` on `PATH` only to generate smoke-test fixtures.
+
+Host requirements (macOS): Xcode Command Line Tools, `pkg-config`, `cmake`,
+`ninja`, `python3`, `bc`, `xz`, and a full `ffmpeg` on `PATH` for fixtures.
+Homebrew can provide the non-Xcode tools. ALSA is Linux-only and is omitted.
 
 Sources, intermediate objects, fixtures and smoke outputs live under `.build/`.
 

@@ -19,6 +19,14 @@ source "$lock_file"
 
 mkdir -p "$download_dir" "$src_dir"
 
+sha256_file() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1"
+	else
+		shasum -a 256 "$1"
+	fi
+}
+
 download() {
 	local url="$1"
 	local output="$2"
@@ -32,11 +40,11 @@ verify_sha256() {
 	local want="$2"
 	if [[ -z "$want" ]]; then
 		echo "warning: no sha256 locked for $file; recording actual value" >&2
-		sha256sum "$file"
+		sha256_file "$file"
 		return 0
 	fi
 	local got
-	got="$(sha256sum "$file" | awk '{print $1}')"
+	got="$(sha256_file "$file" | awk '{print $1}')"
 	if [[ "$got" != "$want" ]]; then
 		echo "sha256 mismatch: $file" >&2
 		echo "  got:  $got" >&2

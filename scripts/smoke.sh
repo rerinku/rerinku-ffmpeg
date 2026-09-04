@@ -23,6 +23,27 @@ ffmpeg="${1:-$project_dir/dist/linux-amd64/ffmpeg}"
 fixtures="${FIXTURES_DIR:-$project_dir/.build/fixtures}"
 work="${SMOKE_WORK_DIR:-$project_dir/.build/smoke}"
 
+timeout_command=""
+if command -v timeout >/dev/null 2>&1; then
+	timeout_command=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+	timeout_command=gtimeout
+fi
+
+run_with_timeout() {
+	if [[ -n "$timeout_command" ]]; then
+		"$timeout_command" 90 "$@"
+	else
+		"$@"
+	fi
+}
+
+now_seconds() {
+	# Python 3.9 on macOS may use a per-process monotonic clock epoch. Each
+	# invocation is a new process, so use wall time for these short diagnostics.
+	python3 -c 'import time; print(time.time())'
+}
+
 if [[ ! -x "$ffmpeg" ]]; then
 	echo "not executable: $ffmpeg" >&2
 	exit 2
@@ -67,10 +88,10 @@ run_case() {
 	[[ "${1:-}" == "--" ]] && shift
 	local log="$work/$name.log"
 	local start end elapsed
-	start=$(date +%s.%N)
-	timeout 90 "$ffmpeg" -hide_banner -loglevel error -nostdin "$@" >"$output" 2>"$log"
+	start=$(now_seconds)
+	run_with_timeout "$ffmpeg" -hide_banner -loglevel error -nostdin "$@" >"$output" 2>"$log"
 	local rc=$?
-	end=$(date +%s.%N)
+	end=$(now_seconds)
 	elapsed=$(printf '%.2f' "$(echo "$end - $start" | bc)")
 	if [[ $rc -eq 0 ]] && "$check" "$output"; then
 		pass=$((pass + 1))
@@ -120,11 +141,11 @@ PY
 	local port
 	port="$(cat "$portfile")"
 	local start end elapsed
-	start=$(date +%s.%N)
-	timeout 90 "$ffmpeg" -hide_banner -loglevel error -nostdin "$@" \
+	start=$(now_seconds)
+	run_with_timeout "$ffmpeg" -hide_banner -loglevel error -nostdin "$@" \
 		-f rtp "rtp://127.0.0.1:$port?pkt_size=$pkt_size" <"$input" >/dev/null 2>"$log"
 	local rc=$?
-	end=$(date +%s.%N)
+	end=$(now_seconds)
 	wait "$listener"
 	elapsed=$(printf '%.2f' "$(echo "$end - $start" | bc)")
 	if [[ $rc -eq 0 ]] && is_rtp "$output"; then
@@ -144,10 +165,10 @@ run_pipe_case() {
 	[[ "${1:-}" == "--" ]] && shift
 	local log="$work/$name.log"
 	local start end elapsed
-	start=$(date +%s.%N)
-	timeout 90 "$ffmpeg" -hide_banner -loglevel error -nostdin "$@" <"$input" >"$output" 2>"$log"
+	start=$(now_seconds)
+	run_with_timeout "$ffmpeg" -hide_banner -loglevel error -nostdin "$@" <"$input" >"$output" 2>"$log"
 	local rc=$?
-	end=$(date +%s.%N)
+	end=$(now_seconds)
 	elapsed=$(printf '%.2f' "$(echo "$end - $start" | bc)")
 	if [[ $rc -eq 0 ]] && "$check" "$output"; then
 		pass=$((pass + 1))
@@ -215,12 +236,17 @@ run_rtp_case g711-mulaw-rtp g711u.rtp "$fixtures/audio48k.s16le" 172 -- \
 # --- rerinku-media/transcode/aac.go: audio -> AAC ADTS -------------------------
 aac_adts() {
 	local name="$1" input="$2" fmt="$3" rate="$4" ch="$5"
-	local rate_args=()
-	[[ -n "$rate" ]] && rate_args=(-ar "$rate" -ac "$ch")
-	run_pipe_case "$name" is_adts "$name.aac" "$input" -- \
-		-fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 \
-		-f "$fmt" "${rate_args[@]}" -i pipe:0 -map 0:a:0 -vn -c:a aac -profile:a aac_low \
-		-ar 48000 -ac 2 -b:a 96000 -flush_packets 1 -f adts pipe:1
+	if [[ -n "$rate" ]]; then
+		run_pipe_case "$name" is_adts "$name.aac" "$input" -- \
+			-fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 \
+			-f "$fmt" -ar "$rate" -ac "$ch" -i pipe:0 -map 0:a:0 -vn -c:a aac -profile:a aac_low \
+			-ar 48000 -ac 2 -b:a 96000 -flush_packets 1 -f adts pipe:1
+	else
+		run_pipe_case "$name" is_adts "$name.aac" "$input" -- \
+			-fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 \
+			-f "$fmt" -i pipe:0 -map 0:a:0 -vn -c:a aac -profile:a aac_low \
+			-ar 48000 -ac 2 -b:a 96000 -flush_packets 1 -f adts pipe:1
+	fi
 }
 aac_adts aac-from-s16le-8k "$fixtures/audio8k.s16le" s16le 8000 1
 aac_adts aac-from-alaw "$fixtures/audio8k.alaw" alaw 8000 1
