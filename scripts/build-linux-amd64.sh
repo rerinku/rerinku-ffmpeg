@@ -40,11 +40,22 @@ case "$build_platform" in
 		default_with_alsa=0
 		default_cc=clang
 		;;
+	windows-amd64)
+		# Cross-compiled from Linux with mingw-w64; there is no native Windows
+		# build path. ALSA is Linux-only (the Windows build has no local UVC
+		# capture at all, see rerinku-cli/internal/uvc/platform_unsupported.go).
+		target_os=windows
+		target_arch=amd64
+		default_with_alsa=0
+		cross_prefix=x86_64-w64-mingw32-
+		default_cc="${cross_prefix}gcc"
+		;;
 	*)
 		echo "unsupported native build platform: $build_platform" >&2
 		exit 2
 		;;
 esac
+cross_prefix="${cross_prefix:-}"
 jobs="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 2)}"
 with_x265="${WITH_X265:-0}"
 with_alsa="${WITH_ALSA:-$default_with_alsa}"
@@ -52,8 +63,8 @@ disable_asm="${DISABLE_ASM:-0}"
 smoke="${SMOKE:-1}"
 force_smoke="${FORCE_SMOKE:-0}"
 
-if [[ "$target_os" == "darwin" && "$with_alsa" == "1" ]]; then
-	echo "WITH_ALSA=1 is not supported on macOS" >&2
+if [[ "$target_os" != "linux" && "$with_alsa" == "1" ]]; then
+	echo "WITH_ALSA=1 is only supported on Linux" >&2
 	exit 2
 fi
 
@@ -70,14 +81,18 @@ fi
 variant="$build_platform"
 [[ "$with_x265" == "1" ]] && variant+="-x265"
 [[ "$with_alsa" != "1" ]] && variant+="-noalsa"
-# macOS never has ALSA, so keep the canonical path exactly darwin-<arch>.
-[[ "$target_os" == "darwin" ]] && variant="${variant%-noalsa}"
+# Only Linux ever has ALSA, so keep the canonical path exactly
+# darwin-<arch> / windows-<arch> there.
+[[ "$target_os" != "linux" ]] && variant="${variant%-noalsa}"
 
 build_dir="$project_dir/.build/build/$variant"
 dep_build_dir="$project_dir/.build/build/deps-$build_platform"
 src_dir="$project_dir/.build/src"
 prefix="$project_dir/.build/prefix/$build_platform"
 dist_dir="$project_dir/dist/$variant"
+exe_suffix=""
+[[ "$target_os" == "windows" ]] && exe_suffix=".exe"
+ffmpeg_bin="$dist_dir/ffmpeg$exe_suffix"
 pkgconfig="$prefix/lib/pkgconfig"
 
 mkdir -p "$build_dir" "$dep_build_dir" "$prefix" "$dist_dir"
@@ -90,6 +105,9 @@ if [[ "$target_os" == "darwin" ]]; then
 else
 	export LDFLAGS="-Wl,--gc-sections"
 fi
+
+host_args=()
+[[ -n "$cross_prefix" ]] && host_args=(--host="${cross_prefix%-}")
 
 sha256_stream() {
 	if command -v sha256sum >/dev/null 2>&1; then
@@ -117,9 +135,9 @@ build_inputs_hash="$({
 } | sha256_stream | awk '{print $1}')"
 build_inputs_file="$build_dir/.build-inputs"
 
-if [[ "$force_smoke" != "1" && -x "$dist_dir/ffmpeg" && -f "$build_inputs_file" ]] &&
+if [[ "$force_smoke" != "1" && -f "$ffmpeg_bin" && -f "$build_inputs_file" ]] &&
 	[[ "$(cat "$build_inputs_file")" == "$build_inputs_hash" ]]; then
-	echo "FFmpeg inputs unchanged; using cached binary: $dist_dir/ffmpeg"
+	echo "FFmpeg inputs unchanged; using cached binary: $ffmpeg_bin"
 	exit 0
 fi
 
@@ -163,6 +181,9 @@ build_x264() {
 		--chroma-format=420
 	)
 	[[ "$asm_enabled" != "1" ]] && configure_args+=(--disable-asm)
+	# x264 does not derive the compiler from --host; it needs --cross-prefix.
+	configure_args+=("${host_args[@]}")
+	[[ -n "$cross_prefix" ]] && configure_args+=(--cross-prefix="$cross_prefix")
 	local hash
 	hash="$(dep_hash "$X264_REF" "$CFLAGS" "${configure_args[@]}")"
 	dep_installed x264 "$hash" && return 0
@@ -223,6 +244,7 @@ build_opus() {
 		--disable-doc
 		--disable-extra-programs
 	)
+	configure_args+=("${host_args[@]}")
 	local hash
 	hash="$(dep_hash "$OPUS_VERSION" "$CFLAGS" "${configure_args[@]}")"
 	dep_installed opus "$hash" && return 0
@@ -254,6 +276,7 @@ build_libwebp() {
 		--disable-libwebpmux
 		--disable-libwebpdemux
 	)
+	configure_args+=("${host_args[@]}")
 	local hash
 	hash="$(dep_hash "$LIBWEBP_VERSION" "$CFLAGS" "${configure_args[@]}")"
 	dep_installed libwebp "$hash" && return 0
@@ -304,6 +327,11 @@ build_ffmpeg() {
 	if [[ "$target_os" == "darwin" ]]; then
 		extra_ldflags="-L$prefix/lib -Wl,-dead_strip"
 		extra_libs="-lpthread -lm"
+	elif [[ "$target_os" == "windows" ]]; then
+		# No -ldl on Windows; winsock/bcrypt come from the mingw sysroot and
+		# are what --enable-network + the RTP/UDP protocols link against.
+		extra_ldflags="-static -L$prefix/lib -Wl,--gc-sections"
+		extra_libs="-lm -lws2_32 -lbcrypt"
 	else
 		extra_ldflags="-static -L$prefix/lib -Wl,--gc-sections"
 		extra_libs="-lpthread -lm -ldl"
@@ -351,6 +379,19 @@ build_ffmpeg() {
 		--enable-libopus
 		--enable-libwebp
 	)
+	if [[ -n "$cross_prefix" ]]; then
+		configure_args+=(
+			--enable-cross-compile
+			--cross-prefix="$cross_prefix"
+			--target-os=mingw32
+			--arch="$target_arch"
+			# Without this, configure looks for <cross-prefix>pkg-config, does
+			# not find it, and silently degrades to "false" — every
+			# require_pkg_config then fails as "not found using pkg-config".
+			# Our dependencies live in $prefix, which PKG_CONFIG_PATH covers.
+			--pkg-config="${PKG_CONFIG:-pkg-config}"
+		)
+	fi
 	if [[ "$with_x265" == "1" ]]; then
 		configure_args+=(--enable-libx265)
 		encoders+=",libx265"
@@ -400,8 +441,8 @@ build_ffmpeg() {
 	local build_hash
 	build_hash="$(dep_hash "$FFMPEG_VERSION" "$X264_REF" "$OPUS_VERSION" "$LIBWEBP_VERSION" \
 		"$with_x265" "$with_alsa" "$asm_enabled" "$CFLAGS" "$LDFLAGS" "${configure_args[@]}")"
-	if [[ "$dependencies_rebuilt" != "1" && -x "$dist_dir/ffmpeg" ]] && dep_installed ffmpeg "$build_hash"; then
-		echo "FFmpeg is up to date: $dist_dir/ffmpeg"
+	if [[ "$dependencies_rebuilt" != "1" && -f "$ffmpeg_bin" ]] && dep_installed ffmpeg "$build_hash"; then
+		echo "FFmpeg is up to date: $ffmpeg_bin"
 		return 0
 	fi
 	rm -f "$dep_build_dir/.ffmpeg-installed"
@@ -410,7 +451,8 @@ build_ffmpeg() {
 	mkdir -p "$ffbuild"
 	pushd "$ffbuild" >/dev/null
 	"$src_dir/ffmpeg/configure" "${configure_args[@]}"
-	make -j"$jobs" ffmpeg
+	# The program target carries the platform's executable suffix.
+	make -j"$jobs" "ffmpeg$exe_suffix"
 	make install-progs
 	popd >/dev/null
 	dep_mark ffmpeg "$build_hash"
@@ -425,32 +467,51 @@ build_libwebp
 build_ffmpeg
 
 if [[ "$ffmpeg_rebuilt" == "1" && "$target_os" == "darwin" ]]; then
-	strip -x "$dist_dir/ffmpeg" || true
+	strip -x "$ffmpeg_bin" || true
 elif [[ "$ffmpeg_rebuilt" == "1" ]]; then
-	strip --strip-all "$dist_dir/ffmpeg" || true
+	"${cross_prefix}strip" --strip-all "$ffmpeg_bin" || true
 fi
 
 if [[ "$target_os" == "darwin" ]]; then
-	if ! file "$dist_dir/ffmpeg" | grep -q 'Mach-O'; then
-		echo "$dist_dir/ffmpeg is not a macOS executable" >&2
+	if ! file "$ffmpeg_bin" | grep -q 'Mach-O'; then
+		echo "$ffmpeg_bin is not a macOS executable" >&2
 		exit 2
 	fi
-else
-	if ldd "$dist_dir/ffmpeg" 2>&1 | grep -Eq '=>|ld-linux'; then
-		echo "$dist_dir/ffmpeg is not statically linked" >&2
+elif [[ "$target_os" == "windows" ]]; then
+	if ! file "$ffmpeg_bin" | grep -q 'PE32+'; then
+		echo "$ffmpeg_bin is not a Windows executable" >&2
+		exit 2
+	fi
+	# ldd cannot read PE. A self-contained build imports only the Windows
+	# system DLLs; anything else (libgcc_s_seh-1, libwinpthread-1, libstdc++-6)
+	# means the mingw runtime was linked dynamically and would have to ship
+	# alongside the executable.
+	dlls="$("${cross_prefix}objdump" -p "$ffmpeg_bin" | awk '/DLL Name:/{print tolower($3)}' | sort -u)"
+	if grep -Eq '^(libgcc|libwinpthread|libstdc\+\+)' <<<"$dlls"; then
+		echo "$ffmpeg_bin depends on mingw runtime DLLs:" >&2
+		grep -E '^(libgcc|libwinpthread|libstdc\+\+)' <<<"$dlls" >&2
 		exit 2
 	fi
 fi
 
 if [[ "$ffmpeg_rebuilt" != "1" && "$force_smoke" != "1" ]]; then
 	printf '%s\n' "$build_inputs_hash" >"$build_inputs_file"
-	echo "FFmpeg inputs unchanged; skipped rebuild and smoke test: $dist_dir/ffmpeg"
+	echo "FFmpeg inputs unchanged; skipped rebuild and smoke test: $ffmpeg_bin"
 	exit 0
 fi
 
-"$project_dir/scripts/size-report.sh" "$dist_dir/ffmpeg"
+"$project_dir/scripts/size-report.sh" "$ffmpeg_bin"
 if [[ "$smoke" == "1" ]]; then
 	echo
-	"$project_dir/scripts/smoke.sh" "$dist_dir/ffmpeg"
+	if [[ "$target_os" == "windows" ]] && ! command -v wine >/dev/null 2>&1; then
+		# The component list is only ever proven by running the real command
+		# lines. Cross-building cannot do that here, so say so instead of
+		# reporting a pass nobody ran: verify on Windows (or install wine and
+		# rerun with FORCE_SMOKE=1) before shipping this binary.
+		echo "skipped smoke test: cannot execute a Windows binary on this host (no wine)." >&2
+		echo "Run scripts/smoke.sh against $ffmpeg_bin on Windows before releasing." >&2
+	else
+		"$project_dir/scripts/smoke.sh" "$ffmpeg_bin"
+	fi
 fi
 printf '%s\n' "$build_inputs_hash" >"$build_inputs_file"

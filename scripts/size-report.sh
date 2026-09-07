@@ -21,6 +21,14 @@ if command -v xz >/dev/null 2>&1; then
 	printf 'xz -9 compressed: %s bytes\n' "$(xz -9 -c "$binary" | wc -c)"
 fi
 
+# A cross-built binary cannot be run here; the size numbers above still apply,
+# but the component listing below needs the target platform.
+if ! "$binary" -hide_banner -version >/dev/null 2>&1; then
+	echo
+	echo "component listing skipped: $binary cannot run on this host"
+	exit 0
+fi
+
 echo
 "$binary" -hide_banner -version | sed -n '1,3p'
 echo
