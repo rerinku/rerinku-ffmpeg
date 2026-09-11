@@ -13,6 +13,7 @@
 #   rerinku-onboard/internal/recording/thumbnail.go   fMP4 -> JPEG thumbnail
 #   rerinku-onboard/internal/recording/storyboard.go  fMP4 -> WebP storyboard
 #   rerinku-onboard/internal/device/framegrab.go      raw H.264 -> JPEG
+#   rerinku-media/transcode/rawvideo.go           raw H.264/H.265 -> yuv420p frames
 #   rerinku-cli/internal/uvc/audio_linux.go       ALSA capture (optional)
 #
 # Usage: scripts/smoke.sh [path/to/ffmpeg]
@@ -291,6 +292,19 @@ run_pipe_case grab-h264-raw is_jpeg grab.jpg "$fixtures/video.h264" -- \
 # Same call for H.265 devices once framegrab.go passes "-f hevc".
 run_pipe_case grab-hevc-raw is_jpeg grab-hevc.jpg "$fixtures/video.hevc" -- \
 	-f hevc -i pipe:0 -frames:v 1 -q:v 5 -f image2pipe -vcodec mjpeg pipe:1
+
+# --- rerinku-media/transcode/rawvideo.go: raw stream -> yuv420p frames --------
+# Continuous decode for on-device analytics: fixed-size I420 frames on stdout
+# (every picture; the host samples by wall clock).
+is_i420_frames() { [[ -s "$1" ]] && (( $(stat -c %s "$1") % (320 * 180 * 3 / 2) == 0 )); }
+run_pipe_case analytics-h264-rawvideo is_i420_frames frames.yuv "$fixtures/video.h264" -- \
+	-fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 \
+	-f h264 -i pipe:0 -an -sn -vf scale=320:180 \
+	-f rawvideo -pix_fmt yuv420p pipe:1
+run_pipe_case analytics-hevc-rawvideo is_i420_frames frames-hevc.yuv "$fixtures/video.hevc" -- \
+	-fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 \
+	-f hevc -i pipe:0 -an -sn -vf scale=320:180 \
+	-f rawvideo -pix_fmt yuv420p pipe:1
 
 # --- planned: live H.265 -> H.264 for browsers (same shape as the MJPEG path) --
 run_pipe_case live-hevc-h264 is_annexb_with_aud hevc-to-h264.h264 "$fixtures/video.hevc" -- \

@@ -340,13 +340,15 @@ build_ffmpeg() {
 	# Component lists mirror the exact command lines in scripts/smoke.sh.
 	# pcm_s16le encoder + muxer: UVC microphone capture ("-f alsa ... -c:a
 	# pcm_s16le -f s16le pipe:1" in rerinku-cli/internal/uvc/audio_linux.go).
-	local encoders="libx264,libopus,aac,mjpeg,libwebp,pcm_alaw,pcm_mulaw,pcm_s16le"
+	# rawvideo encoder + muxer: continuous yuv420p frame output for on-device
+	# analytics (rerinku-media/transcode/rawvideo.go).
+	local encoders="libx264,libopus,aac,mjpeg,libwebp,pcm_alaw,pcm_mulaw,pcm_s16le,rawvideo"
 	# Opus is decoded through libopus (already linked for encoding) instead of
 	# the native decoder and its tables.
 	local decoders="h264,hevc,mjpeg,aac,libopus,pcm_s16le,pcm_alaw,pcm_mulaw"
 	# FFmpeg 9 names the raw PCM demuxers pcm_*; "s16le" would be ignored.
 	local demuxers="h264,hevc,mjpeg,aac,ogg,pcm_s16le,pcm_alaw,pcm_mulaw,mov"
-	local muxers="h264,adts,rtp,image2pipe,webp,mp4,pcm_s16le"
+	local muxers="h264,adts,rtp,image2pipe,webp,mp4,pcm_s16le,rawvideo"
 	local parsers="h264,hevc,mjpeg,aac"
 	local bsfs="h264_metadata"
 	# aresample/aformat are inserted implicitly by the CLI for every -ar/-ac
