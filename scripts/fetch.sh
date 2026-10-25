@@ -5,6 +5,8 @@
 # build never clones the x265 tree or downloads alsa-lib:
 #   WITH_X265=1   also fetch x265 (H.265 encoder)
 #   WITH_ALSA=0   skip alsa-lib (default 1: ALSA capture for UVC USB microphones)
+#   WITH_LINUX_HWACCEL=1  also fetch libva, libdrm, nv-codec-headers and meson
+#                 (Linux hardware decoding: VA-API and NVDEC)
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -13,6 +15,7 @@ download_dir="${DOWNLOAD_DIR:-$project_dir/.build/downloads}"
 src_dir="${SRC_DIR:-$project_dir/.build/src}"
 with_x265="${WITH_X265:-0}"
 with_alsa="${WITH_ALSA:-1}"
+with_linux_hwaccel="${WITH_LINUX_HWACCEL:-0}"
 
 # shellcheck disable=SC1090
 source "$lock_file"
@@ -98,6 +101,13 @@ fi
 
 if [[ "$with_alsa" == "1" ]]; then
 	fetch_tarball alsa-lib "$ALSA_LIB_VERSION" "$ALSA_LIB_URL" "$ALSA_LIB_SHA256" tar.bz2
+fi
+
+if [[ "$with_linux_hwaccel" == "1" ]]; then
+	fetch_tarball libva "$LIBVA_VERSION" "$LIBVA_URL" "$LIBVA_SHA256" tar.bz2
+	fetch_tarball libdrm "$LIBDRM_VERSION" "$LIBDRM_URL" "$LIBDRM_SHA256" tar.xz
+	fetch_tarball nv-codec-headers "$NV_CODEC_HEADERS_VERSION" "$NV_CODEC_HEADERS_URL" "$NV_CODEC_HEADERS_SHA256"
+	fetch_tarball meson "$MESON_VERSION" "$MESON_URL" "$MESON_SHA256"
 fi
 
 echo "sources ready under $src_dir"

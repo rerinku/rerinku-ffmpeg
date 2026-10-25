@@ -22,12 +22,15 @@ fails if any of them stops working.
 | Recording storyboards (-> WebP) | `rerinku-onboard/internal/recording/storyboard.go` | tpad/fps/scale/pad/tile filters, libwebp, webp muxer |
 | Device snapshot (raw H.264 -> JPEG) | `rerinku-onboard/internal/device/framegrab.go` | h264 demuxer/decoder, mjpeg encoder |
 | UVC USB microphone capture | `rerinku-cli/internal/uvc/audio_linux.go` | alsa input device (static alsa-lib), pcm_s16le encoder + muxer |
+| On-device analytics decode (hardware first) | `rerinku-media/transcode/rawvideo.go`, `hwaccel.go` | h264/hevc decoders, rawvideo encoder+muxer; hardware builds add `h264/hevc_vaapi` + `scale_vaapi`, `h264/hevc_nvdec`, `h264/hevc_d3d11va` or `h264/hevc_videotoolbox`, and `hwdownload` |
 
 ## Build
 
 ```sh
-./scripts/build-linux-amd64.sh    # dist/linux-amd64/ffmpeg
-./scripts/build-macos.sh          # dist/darwin-arm64/ffmpeg (or darwin-amd64)
+./scripts/build-linux-amd64.sh      # dist/linux-amd64/ffmpeg     (static, software decoding)
+./scripts/build-linux-amd64-hw.sh   # dist/linux-amd64-hw/ffmpeg  (VA-API + NVDEC, needs docker)
+./scripts/build-windows-amd64.sh    # dist/windows-amd64/ffmpeg.exe (D3D11VA)
+./scripts/build-macos.sh            # dist/darwin-arm64/ffmpeg (VideoToolbox; or darwin-amd64)
 ```
 
 Linux output is one fully static executable (glibc linked in). macOS output
@@ -36,20 +39,43 @@ libraries. `rerinku-onboard` embeds the matching platform build and seeds it
 into `~/.rerinku/bin/ffmpeg` on every start; the server never uses a system
 ffmpeg.
 
+### Hardware decoding
+
+On-device analytics decodes on the GPU first (onboard decides; see
+`rerinku-onboard/internal/videodecode`). Windows (D3D11VA) and macOS
+(VideoToolbox) builds carry their API by default: the OS loads it at run time,
+the link does not change.
+
+Linux needs the system's VA-API drivers (radeonsi, iHD, i965) and NVIDIA's
+`libcuda`/`libnvcuvid`, loaded with `dlopen`, which a fully static glibc cannot
+do. So the hardware build is a second variant, `linux-amd64-hw`: glibc (and
+only glibc) linked dynamically, libva/libdrm built from source and linked in
+statically, NVDEC through header-only nv-codec-headers 11.1 (NVIDIA drivers
+from 470.57). `build-linux-amd64-hw.sh` builds it in a Debian 11 container
+(`packaging/linux-hw.Dockerfile`), so it needs glibc 2.31 or newer (Ubuntu
+20.04+, Debian 11+, RHEL 9+); the build prints the glibc floor and fails if
+anything but glibc is linked dynamically. onboard embeds both Linux builds and
+seeds the hardware one only where it starts, the static one everywhere else
+(musl, older glibc).
+
 Switches:
 
 | Variable | Effect |
 |---|---|
 | `WITH_X265=1` | Add the libx265 H.265 **encoder** (+5 MB). Decoding H.265 never needs it: the native `hevc` decoder is always built. Needs `libstdc++-<gccver>-dev`. |
+| `WITH_HWACCEL=0/1` | Hardware decoding APIs. Default on for Windows and macOS; on Linux `1` selects the `-hw` variant (prefer `build-linux-amd64-hw.sh`, which builds it in the old-glibc container). |
 | `WITH_ALSA=0` | Drop the `alsa` input device (default on: built from a static alsa-lib). Without it UVC cameras with a USB microphone go video-only, and because the device still advertises audio, WebRTC start waits 8 s for the missing audio track. |
 | `DISABLE_ASM=1` | No assembly (only for hosts without `nasm`; several times slower) |
 | `SMOKE=0` | Skip the functional smoke test after the build |
 | `FORCE_SMOKE=1` | Re-run the smoke test even when build inputs are unchanged |
 | `JOBS=n` | Parallelism |
 
-Switches are reflected in the variant name (`linux-amd64-x265`, `linux-amd64-noalsa`, ...).
+Switches are reflected in the variant name (`linux-amd64-hw`, `linux-amd64-x265`, `linux-amd64-noalsa`, ...).
 Dependencies are rebuilt automatically when their configure arguments change.
-The Linux build fails if the result is not fully statically linked.
+The static Linux build fails if the result is not fully statically linked.
+`BUILD_ROOT` moves sources, objects and dependencies elsewhere (the container
+build uses `.build/container-<image>` so host-built libraries never leak newer
+glibc symbols in).
 
 Host requirements (Debian): `build-essential nasm pkg-config curl git cmake
 ninja-build python3 bc xz-utils`, plus `libstdc++-14-dev` for `WITH_X265=1`

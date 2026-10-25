@@ -295,14 +295,18 @@ run_pipe_case grab-hevc-raw is_jpeg grab-hevc.jpg "$fixtures/video.hevc" -- \
 
 # --- rerinku-media/transcode/rawvideo.go: raw stream -> yuv420p frames --------
 # Continuous decode for on-device analytics: fixed-size I420 frames on stdout
-# (every picture; the host samples by wall clock).
+# (every picture; the host samples by wall clock). No -fflags nobuffer: it
+# drops the leading keyframe that probing read, so decoding would start a GOP late.
+# -threads 2 is the software decoder budget (transcode.DefaultDecodeThreads);
+# the hardware variants (vaapi/cuda/d3d11va/videotoolbox) need a GPU and are
+# not run here.
 is_i420_frames() { [[ -s "$1" ]] && (( $(stat -c %s "$1") % (320 * 180 * 3 / 2) == 0 )); }
 run_pipe_case analytics-h264-rawvideo is_i420_frames frames.yuv "$fixtures/video.h264" -- \
-	-fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 \
+	-threads 2 -flags low_delay -probesize 32 -analyzeduration 0 \
 	-f h264 -i pipe:0 -an -sn -vf scale=320:180 \
 	-f rawvideo -pix_fmt yuv420p pipe:1
 run_pipe_case analytics-hevc-rawvideo is_i420_frames frames-hevc.yuv "$fixtures/video.hevc" -- \
-	-fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 \
+	-threads 2 -flags low_delay -probesize 32 -analyzeduration 0 \
 	-f hevc -i pipe:0 -an -sn -vf scale=320:180 \
 	-f rawvideo -pix_fmt yuv420p pipe:1
 

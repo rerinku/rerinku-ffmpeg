@@ -6,6 +6,15 @@
 # libraries. In both cases rerinku-onboard embeds the executable and seeds it
 # into ~/.rerinku/bin at runtime.
 #
+# Hardware decoding (WITH_HWACCEL): Windows gets D3D11VA and macOS
+# VideoToolbox — the system loads them, nothing changes in the link. Linux gets
+# VA-API (Intel, AMD) and NVDEC (NVIDIA) in a separate variant
+# (dist/linux-amd64-hw): the VA drivers and NVIDIA's libraries are the
+# system's, loaded with dlopen, which a fully static glibc cannot do. That
+# variant links glibc (and only glibc) dynamically; libva and libdrm are
+# linked in statically. Build it in an old-glibc container with
+# scripts/build-linux-amd64-hw.sh so it runs on older distributions.
+#
 # Switches (environment variables, all default to 0 unless noted):
 #   WITH_X265=1     add the libx265 H.265 *encoder* (+~5 MB; decoding H.265
 #                   never needs it, the native hevc decoder is always built)
@@ -13,6 +22,8 @@
 #                   USB microphone capture audio through "-f alsa"; without it
 #                   the SDK falls back to video-only and WebRTC start waits
 #                   for the announced audio track to time out)
+#   WITH_HWACCEL=1  hardware decoding APIs (default 1 on Windows and macOS,
+#                   0 on Linux where it selects the -hw variant, see above)
 #   DISABLE_ASM=1   drop all assembly (only for toolchains without nasm)
 #   SMOKE=0         skip scripts/smoke.sh after the build (default 1)
 #   FORCE_SMOKE=1   rerun validation even when the cached binary is current
@@ -32,12 +43,14 @@ case "$build_platform" in
 		target_os=linux
 		target_arch=amd64
 		default_with_alsa=1
+		default_with_hwaccel=0
 		default_cc=gcc
 		;;
 	darwin-arm64|darwin-amd64)
 		target_os=darwin
 		target_arch="${build_platform#darwin-}"
 		default_with_alsa=0
+		default_with_hwaccel=1
 		default_cc=clang
 		;;
 	windows-amd64)
@@ -47,6 +60,7 @@ case "$build_platform" in
 		target_os=windows
 		target_arch=amd64
 		default_with_alsa=0
+		default_with_hwaccel=1
 		cross_prefix=x86_64-w64-mingw32-
 		default_cc="${cross_prefix}gcc"
 		;;
@@ -59,6 +73,11 @@ cross_prefix="${cross_prefix:-}"
 jobs="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 2)}"
 with_x265="${WITH_X265:-0}"
 with_alsa="${WITH_ALSA:-$default_with_alsa}"
+with_hwaccel="${WITH_HWACCEL:-$default_with_hwaccel}"
+# Linux hardware decoding changes the link (glibc dynamic) and adds libva,
+# libdrm and the NVDEC headers; the other platforms only enable FFmpeg code.
+linux_hw=0
+[[ "$target_os" == "linux" && "$with_hwaccel" == "1" ]] && linux_hw=1
 disable_asm="${DISABLE_ASM:-0}"
 smoke="${SMOKE:-1}"
 force_smoke="${FORCE_SMOKE:-0}"
@@ -79,16 +98,26 @@ if [[ "$disable_asm" != "1" ]]; then
 fi
 
 variant="$build_platform"
+[[ "$linux_hw" == "1" ]] && variant+="-hw"
 [[ "$with_x265" == "1" ]] && variant+="-x265"
 [[ "$with_alsa" != "1" ]] && variant+="-noalsa"
 # Only Linux ever has ALSA, so keep the canonical path exactly
 # darwin-<arch> / windows-<arch> there.
 [[ "$target_os" != "linux" ]] && variant="${variant%-noalsa}"
 
-build_dir="$project_dir/.build/build/$variant"
-dep_build_dir="$project_dir/.build/build/deps-$build_platform"
-src_dir="$project_dir/.build/src"
-prefix="$project_dir/.build/prefix/$build_platform"
+# The -hw variant compiles its dependencies position-independent (it links a
+# PIE against the dynamic glibc), so it keeps them in a prefix of its own.
+dep_platform="$build_platform"
+[[ "$linux_hw" == "1" ]] && dep_platform+="-hw"
+# BUILD_ROOT separates builds made with different toolchains (the old-glibc
+# container of build-linux-amd64-hw.sh): sources are unpacked and compiled
+# there; downloads (DOWNLOAD_DIR) and dist/ stay shared.
+build_root="${BUILD_ROOT:-$project_dir/.build}"
+build_dir="$build_root/build/$variant"
+dep_build_dir="$build_root/build/deps-$dep_platform"
+src_dir="${SRC_DIR:-$build_root/src}"
+export SRC_DIR="$src_dir"
+prefix="$build_root/prefix/$dep_platform"
 dist_dir="$project_dir/dist/$variant"
 exe_suffix=""
 [[ "$target_os" == "windows" ]] && exe_suffix=".exe"
@@ -99,6 +128,12 @@ mkdir -p "$build_dir" "$dep_build_dir" "$prefix" "$dist_dir"
 
 export PKG_CONFIG_PATH="$pkgconfig"
 export CFLAGS="-Os -ffunction-sections -fdata-sections"
+if [[ "$linux_hw" == "1" ]]; then
+	# Only our own static libraries may be linked: a system .pc found through
+	# the default search path would pull in a shared library next to glibc.
+	export PKG_CONFIG_LIBDIR="$pkgconfig"
+	CFLAGS+=" -fPIC"
+fi
 export CXXFLAGS="$CFLAGS"
 if [[ "$target_os" == "darwin" ]]; then
 	export LDFLAGS="-Wl,-dead_strip"
@@ -126,6 +161,7 @@ build_inputs_hash="$({
 		"platform=$build_platform" \
 		"with_x265=$with_x265" \
 		"with_alsa=$with_alsa" \
+		"with_hwaccel=$with_hwaccel" \
 		"asm_enabled=$asm_enabled" \
 		"cc=$compiler" \
 		"macosx_deployment_target=${MACOSX_DEPLOYMENT_TARGET:-}" \
@@ -141,7 +177,7 @@ if [[ "$force_smoke" != "1" && -f "$ffmpeg_bin" && -f "$build_inputs_file" ]] &&
 	exit 0
 fi
 
-WITH_X265="$with_x265" WITH_ALSA="$with_alsa" "$project_dir/scripts/fetch.sh"
+WITH_X265="$with_x265" WITH_ALSA="$with_alsa" WITH_LINUX_HWACCEL="$linux_hw" "$project_dir/scripts/fetch.sh"
 
 dependencies_rebuilt=0
 ffmpeg_rebuilt=0
@@ -181,6 +217,7 @@ build_x264() {
 		--chroma-format=420
 	)
 	[[ "$asm_enabled" != "1" ]] && configure_args+=(--disable-asm)
+	[[ "$linux_hw" == "1" ]] && configure_args+=(--enable-pic)
 	# x264 does not derive the compiler from --host; it needs --cross-prefix.
 	configure_args+=("${host_args[@]}")
 	[[ -n "$cross_prefix" ]] && configure_args+=(--cross-prefix="$cross_prefix")
@@ -321,6 +358,80 @@ build_alsa() {
 	dep_mark alsa "$hash"
 }
 
+meson_cmd() {
+	python3 "$src_dir/meson/meson.py" "$@"
+}
+
+build_libdrm() {
+	# Only the core library: libva's DRM backend asks it for the kernel
+	# driver's name. The per-vendor libdrm_* helpers belong to the drivers,
+	# which bring the system's own.
+	local libdrm_build="$dep_build_dir/libdrm"
+	local meson_args=(
+		--prefix="$prefix"
+		--libdir=lib
+		--buildtype=minsize
+		--default-library=static
+		-Db_staticpic=true
+		-Dintel=disabled -Dradeon=disabled -Damdgpu=disabled -Dnouveau=disabled
+		-Dvmwgfx=disabled -Domap=disabled -Dexynos=disabled -Dfreedreno=disabled
+		-Dtegra=disabled -Dvc4=disabled -Detnaviv=disabled -Dcairo-tests=disabled
+		-Dman-pages=disabled -Dvalgrind=disabled -Dfreedreno-kgsl=false
+		-Dinstall-test-programs=false -Dudev=false -Dtests=false
+	)
+	local hash
+	hash="$(dep_hash "$LIBDRM_VERSION" "$CFLAGS" "${meson_args[@]}")"
+	dep_installed libdrm "$hash" && return 0
+	dependencies_rebuilt=1
+	rm -f "$dep_build_dir/.libdrm-installed"
+	rm -rf "$libdrm_build"
+	meson_cmd setup "$libdrm_build" "$src_dir/libdrm" "${meson_args[@]}"
+	meson_cmd compile -C "$libdrm_build" -j "$jobs"
+	meson_cmd install -C "$libdrm_build"
+	dep_mark libdrm "$hash"
+}
+
+build_libva() {
+	# The DRM backend only (FFmpeg opens the render node itself); no X11,
+	# GLX or Wayland. driverdir is just the compiled-in default: onboard
+	# points LIBVA_DRIVERS_PATH at the distribution's driver directories.
+	local libva_build="$dep_build_dir/libva"
+	local meson_args=(
+		--prefix="$prefix"
+		--libdir=lib
+		--buildtype=minsize
+		--default-library=static
+		-Db_staticpic=true
+		-Ddriverdir=/usr/lib/x86_64-linux-gnu/dri:/usr/lib64/dri:/usr/lib/dri:/usr/local/lib/dri
+		-Dwith_x11=no -Dwith_glx=no -Dwith_wayland=no -Dwith_win32=no
+		-Denable_docs=false
+	)
+	local hash
+	hash="$(dep_hash "$LIBVA_VERSION" "$CFLAGS" "static-patch" "${meson_args[@]}")"
+	dep_installed libva "$hash" && return 0
+	dependencies_rebuilt=1
+	rm -f "$dep_build_dir/.libva-installed"
+	rm -rf "$libva_build"
+	# libva declares its libraries shared_library() outright; library()
+	# follows --default-library (the same patch BtbN's FFmpeg builds apply).
+	sed -i 's/= shared_library(/= library(/' "$src_dir/libva/va/meson.build"
+	meson_cmd setup "$libva_build" "$src_dir/libva" "${meson_args[@]}"
+	meson_cmd compile -C "$libva_build" -j "$jobs"
+	meson_cmd install -C "$libva_build"
+	dep_mark libva "$hash"
+}
+
+install_nv_codec_headers() {
+	# Headers and a .pc file only: FFmpeg loads libcuda.so.1 and
+	# libnvcuvid.so.1 from the NVIDIA driver at run time.
+	local hash
+	hash="$(dep_hash "$NV_CODEC_HEADERS_VERSION" "$prefix")"
+	dep_installed nv-codec-headers "$hash" && return 0
+	dependencies_rebuilt=1
+	make -C "$src_dir/nv-codec-headers" PREFIX="$prefix" LIBDIR=lib install
+	dep_mark nv-codec-headers "$hash"
+}
+
 build_ffmpeg() {
 	local ffbuild="$build_dir/ffmpeg"
 	local extra_ldflags extra_libs
@@ -332,6 +443,12 @@ build_ffmpeg() {
 		# are what --enable-network + the RTP/UDP protocols link against.
 		extra_ldflags="-static -L$prefix/lib -Wl,--gc-sections"
 		extra_libs="-lm -lws2_32 -lbcrypt"
+	elif [[ "$linux_hw" == "1" ]]; then
+		# glibc stays dynamic (dlopen of the VA drivers and NVIDIA's
+		# libraries needs it); libgcc is linked in so glibc is the only
+		# shared dependency.
+		extra_ldflags="-L$prefix/lib -Wl,--gc-sections -static-libgcc"
+		extra_libs="-lpthread -lm -ldl"
 	else
 		extra_ldflags="-static -L$prefix/lib -Wl,--gc-sections"
 		extra_libs="-lpthread -lm -ldl"
@@ -354,6 +471,17 @@ build_ffmpeg() {
 	# aresample/aformat are inserted implicitly by the CLI for every -ar/-ac
 	# change (8 kHz G.711 -> 48 kHz Opus, mono -> stereo AAC).
 	local filters="scale,fps,pad,tile,tpad,format,null,anull,aresample,aformat"
+	# Hardware decoding for on-device analytics (rerinku-media
+	# transcode/hwaccel.go): decoded surfaces stay on the GPU until hwdownload,
+	# VA-API also scales there (scale_vaapi). Only the decoders cameras send.
+	local hwaccels=""
+	if [[ "$with_hwaccel" == "1" ]]; then
+		case "$target_os" in
+			linux) hwaccels="h264_vaapi,hevc_vaapi,h264_nvdec,hevc_nvdec"; filters+=",hwdownload,scale_vaapi" ;;
+			windows) hwaccels="h264_d3d11va,hevc_d3d11va"; filters+=",hwdownload" ;;
+			darwin) hwaccels="h264_videotoolbox,hevc_videotoolbox"; filters+=",hwdownload" ;;
+		esac
+	fi
 	local configure_args=(
 		--prefix="$prefix"
 		--bindir="$dist_dir"
@@ -423,6 +551,16 @@ build_ffmpeg() {
 			extra_ldflags="-L$stdcxx_dir $extra_ldflags"
 		fi
 	fi
+	if [[ "$with_hwaccel" == "1" ]]; then
+		case "$target_os" in
+			linux) configure_args+=(--enable-pic --enable-vaapi --enable-ffnvcodec --enable-cuda --enable-nvdec) ;;
+			# Both load their system DLLs at run time (LoadLibrary), so the
+			# executable still imports only what it did before.
+			windows) configure_args+=(--enable-d3d11va) ;;
+			darwin) configure_args+=(--enable-videotoolbox) ;;
+		esac
+		configure_args+=(--enable-hwaccel="$hwaccels")
+	fi
 	if [[ "$with_alsa" == "1" ]]; then
 		configure_args+=(--enable-alsa --enable-indev=alsa)
 	else
@@ -442,7 +580,8 @@ build_ffmpeg() {
 	)
 	local build_hash
 	build_hash="$(dep_hash "$FFMPEG_VERSION" "$X264_REF" "$OPUS_VERSION" "$LIBWEBP_VERSION" \
-		"$with_x265" "$with_alsa" "$asm_enabled" "$CFLAGS" "$LDFLAGS" "${configure_args[@]}")"
+		"$with_x265" "$with_alsa" "$with_hwaccel" "${LIBVA_VERSION:-}" "${LIBDRM_VERSION:-}" "${NV_CODEC_HEADERS_VERSION:-}" \
+		"$asm_enabled" "$CFLAGS" "$LDFLAGS" "${configure_args[@]}")"
 	if [[ "$dependencies_rebuilt" != "1" && -f "$ffmpeg_bin" ]] && dep_installed ffmpeg "$build_hash"; then
 		echo "FFmpeg is up to date: $ffmpeg_bin"
 		return 0
@@ -466,6 +605,11 @@ build_x264
 build_opus
 build_libwebp
 [[ "$with_alsa" == "1" ]] && build_alsa
+if [[ "$linux_hw" == "1" ]]; then
+	build_libdrm
+	build_libva
+	install_nv_codec_headers
+fi
 build_ffmpeg
 
 if [[ "$ffmpeg_rebuilt" == "1" && "$target_os" == "darwin" ]]; then
@@ -494,6 +638,35 @@ elif [[ "$target_os" == "windows" ]]; then
 		grep -E '^(libgcc|libwinpthread|libstdc\+\+)' <<<"$dlls" >&2
 		exit 2
 	fi
+fi
+
+if [[ "$linux_hw" == "1" ]]; then
+	# glibc must be the only shared dependency (no libva/libdrm/libstdc++ from
+	# the build host), and the newest glibc symbol decides where it runs.
+	shared="$(objdump -p "$ffmpeg_bin" | awk '/NEEDED/{print $2}' | sort -u)"
+	unexpected="$(grep -Ev '^(libc|libm|libdl|libpthread|librt)\.so\.[0-9]+$|^ld-linux' <<<"$shared" || true)"
+	if [[ -n "$unexpected" ]]; then
+		echo "$ffmpeg_bin links shared libraries other than glibc:" >&2
+		echo "$unexpected" >&2
+		exit 2
+	fi
+	glibc_floor="$(objdump -T "$ffmpeg_bin" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)"
+	echo "linux-hw: needs ${glibc_floor:-unknown glibc} (shared: $(tr '\n' ' ' <<<"$shared"))"
+fi
+if [[ "$with_hwaccel" == "1" && "$target_os" != "windows" ]]; then
+	# The APIs onboard probes for (`ffmpeg -hwaccels`) must be there.
+	case "$target_os" in
+		linux) want_hwaccels="vaapi cuda" ;;
+		darwin) want_hwaccels="videotoolbox" ;;
+	esac
+	listed="$("$ffmpeg_bin" -hide_banner -hwaccels)"
+	for api in $want_hwaccels; do
+		if ! grep -qx "$api" <<<"$listed"; then
+			echo "$ffmpeg_bin lacks the $api hwaccel:" >&2
+			echo "$listed" >&2
+			exit 2
+		fi
+	done
 fi
 
 if [[ "$ffmpeg_rebuilt" != "1" && "$force_smoke" != "1" ]]; then
