@@ -13,5 +13,5 @@ RUN if grep -q '^# deb http://snapshot' /etc/apt/sources.list 2>/dev/null; then 
 	&& apt-get -o Acquire::Check-Valid-Until=false update \
 	&& DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Check-Valid-Until=false install -y --no-install-recommends \
 		build-essential nasm pkg-config ninja-build curl ca-certificates git python3 python3-distutils \
-		xz-utils bzip2 file binutils \
+		xz-utils bzip2 file binutils bc \
 	&& rm -rf /var/lib/apt/lists/*

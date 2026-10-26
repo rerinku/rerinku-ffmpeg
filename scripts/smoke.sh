@@ -2,7 +2,7 @@
 # Functional smoke test for a trimmed FFmpeg binary.
 #
 # Every case replays one of the exact command lines that rerinku-cli /
-# rerinku-media / rerinku-onboard issue in production, so a green run means the
+# rerinku-media / rerinku-view issue in production, so a green run means the
 # trimmed component list is sufficient for the product. Keep this file in sync
 # with those call sites:
 #
@@ -10,9 +10,9 @@
 #   rerinku-cli/internal/transcode/opus.go        audio -> Opus / G.711 RTP
 #   rerinku-media/transcode/aac.go                audio -> AAC ADTS (HLS)
 #   rerinku-media/recording/ffmpeg.go             MJPEG recording -> H.264 fMP4
-#   rerinku-onboard/internal/recording/thumbnail.go   fMP4 -> JPEG thumbnail
-#   rerinku-onboard/internal/recording/storyboard.go  fMP4 -> WebP storyboard
-#   rerinku-onboard/internal/device/framegrab.go      raw H.264 -> JPEG
+#   rerinku-view/internal/recording/thumbnail.go   fMP4 -> JPEG thumbnail
+#   rerinku-view/internal/recording/storyboard.go  fMP4 -> WebP storyboard
+#   rerinku-view/internal/device/framegrab.go      raw H.264 -> JPEG
 #   rerinku-media/transcode/rawvideo.go           raw H.264/H.265 -> yuv420p frames
 #   rerinku-cli/internal/uvc/audio_linux.go       ALSA capture (optional)
 #
@@ -263,7 +263,7 @@ run_rtp_case opus-from-aac opus-from-aac.rtp "$fixtures/audio48k.aac" 1200 -- \
 	-c:a libopus -application lowdelay -frame_duration 20 -b:a 32000 \
 	-ar 48000 -ac 1 -flush_packets 1
 
-# --- rerinku-onboard/internal/recording/thumbnail.go: fMP4 -> JPEG ------------
+# --- rerinku-view/internal/recording/thumbnail.go: fMP4 -> JPEG ------------
 thumb() {
 	local name="$1" input="$2"
 	run_pipe_case "$name" is_jpeg "$name.jpg" "$input" -- \
@@ -274,7 +274,7 @@ thumb thumb-h264-mp4 "$fixtures/h264.mp4"
 thumb thumb-hevc-mp4 "$fixtures/hevc.mp4"
 thumb thumb-hevc10-mp4 "$fixtures/hevc10.mp4"
 
-# --- rerinku-onboard/internal/recording/storyboard.go: fMP4 -> WebP -----------
+# --- rerinku-view/internal/recording/storyboard.go: fMP4 -> WebP -----------
 storyboard() {
 	local name="$1" input="$2"
 	local filter="tpad=stop_mode=clone:stop_duration=1,fps=1,scale=160:90:force_original_aspect_ratio=decrease,pad=160:90:(ow-iw)/2:(oh-ih)/2,tile=8x8"
@@ -286,7 +286,7 @@ storyboard() {
 storyboard storyboard-h264 "$fixtures/h264.mp4"
 storyboard storyboard-hevc "$fixtures/hevc.mp4"
 
-# --- rerinku-onboard/internal/device/framegrab.go: raw stream -> JPEG ---------
+# --- rerinku-view/internal/device/framegrab.go: raw stream -> JPEG ---------
 run_pipe_case grab-h264-raw is_jpeg grab.jpg "$fixtures/video.h264" -- \
 	-f h264 -i pipe:0 -frames:v 1 -q:v 5 -f image2pipe -vcodec mjpeg pipe:1
 # Same call for H.265 devices once framegrab.go passes "-f hevc".
@@ -371,18 +371,18 @@ else
 	report SKIP alsa-indev 0 "no alsa input device (UVC USB microphones fall back to video-only)"
 fi
 
-# --- rerinku-onboard/internal/embeddedffmpeg: required encoder probe ----------
+# --- rerinku-view/internal/embeddedffmpeg: required encoder probe ----------
 missing=()
 for enc in libx264 libopus aac libwebp mjpeg; do
 	grep -q " $enc " <<<"$encoders" || missing+=("$enc")
 done
 if ((${#missing[@]} == 0)); then
 	pass=$((pass + 1))
-	report PASS onboard-probe 0 "libx264 libopus aac libwebp mjpeg"
+	report PASS view-probe 0 "libx264 libopus aac libwebp mjpeg"
 else
 	fail=$((fail + 1))
-	failed_names+=(onboard-probe)
-	report FAIL onboard-probe 0 "missing: ${missing[*]}"
+	failed_names+=(view-probe)
+	report FAIL view-probe 0 "missing: ${missing[*]}"
 fi
 
 echo

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the trimmed FFmpeg for the selected native platform.
 #
-# One executable per platform; rerinku-onboard embeds it and seeds it into
+# One executable per platform; Rerinku View embeds it and seeds it into
 # ~/.rerinku/bin at runtime. Every platform decodes on the GPU first
 # (WITH_HWACCEL, default on): Windows through D3D11VA and macOS through
 # VideoToolbox, which the system loads at run time; Linux through VA-API
@@ -393,8 +393,8 @@ build_libdrm() {
 
 build_libva() {
 	# The DRM backend only (FFmpeg opens the render node itself); no X11,
-	# GLX or Wayland. driverdir is just the compiled-in default: onboard
-	# points LIBVA_DRIVERS_PATH at the distribution's driver directories.
+	# GLX or Wayland. driverdir is just the compiled-in default: Rerinku
+	# View points LIBVA_DRIVERS_PATH at the distribution's driver directories.
 	local libva_build="$dep_build_dir/libva"
 	local meson_args=(
 		--prefix="$prefix"
@@ -665,7 +665,7 @@ if [[ "$linux" == "1" ]]; then
 	echo "linux: needs ${glibc_floor:-unknown glibc} (shared: $(tr '\n' ' ' <<<"$shared"))"
 fi
 if [[ "$with_hwaccel" == "1" && "$target_os" != "windows" ]]; then
-	# The APIs onboard probes for (`ffmpeg -hwaccels`) must be there.
+	# The APIs Rerinku View probes for (`ffmpeg -hwaccels`) must be there.
 	case "$target_os" in
 		linux) want_hwaccels="vaapi cuda" ;;
 		darwin) want_hwaccels="videotoolbox" ;;

@@ -1,0 +1,138 @@
+name: Release
+
+# Pushing a tag v* builds every platform, runs the smoke test where the build
+# host can, and publishes a GitHub Release with the binaries and the complete
+# corresponding source (the GPL requires that for what is shipped).
+# Run manually (Actions > Release > Run workflow) to do everything except
+# publishing; the packaged files are kept as the "release" artifact.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The macOS binaries should run on the macOS versions Rerinku View supports,
+  # not only on the runner's own.
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux is built in a Debian 11 container (glibc 2.29 floor).
+          - { platform: linux-amd64, runner: ubuntu-24.04, target: linux-container }
+          - { platform: windows-amd64, runner: ubuntu-24.04, target: windows }
+          - { platform: darwin-arm64, runner: macos-26, target: macos }
+          - { platform: darwin-amd64, runner: macos-26-intel, target: macos }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A full ffmpeg is only needed to generate the smoke test's fixtures.
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg curl git xz-utils bc
+      - name: Install tools (Windows cross-build)
+        if: matrix.platform == 'windows-amd64'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            build-essential nasm pkg-config cmake ninja-build python3 gcc-mingw-w64-x86-64
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install nasm pkg-config cmake ninja ffmpeg xz
+
+      # Downloads are checked against the checksums in packaging/versions.env,
+      # so a cached file cannot be a different one.
+      - name: Cache source downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/downloads
+          key: sources-${{ hashFiles('packaging/versions.env') }}
+
+      - name: Generate smoke test fixtures
+        run: ./scripts/make-fixtures.sh
+
+      - name: Build
+        run: make ${{ matrix.target }}
+
+      - name: Show the executable
+        run: ls -l dist/${{ matrix.platform }}/ && file dist/${{ matrix.platform }}/ffmpeg*
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ffmpeg-${{ matrix.platform }}
+          path: dist/${{ matrix.platform }}/ffmpeg*
+          if-no-files-found: error
+          retention-days: 14
+
+  package:
+    name: Package and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Name this release
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "VERSION=$GITHUB_REF_NAME" >>"$GITHUB_ENV"
+          else
+            echo "VERSION=dev-${GITHUB_SHA::7}" >>"$GITHUB_ENV"
+          fi
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ffmpeg-*
+          path: artifacts
+
+      - name: Package the executables and the source
+        run: |
+          for dir in artifacts/ffmpeg-*; do
+            platform="${dir#artifacts/ffmpeg-}"
+            mkdir -p "dist/$platform"
+            cp "$dir"/ffmpeg* "dist/$platform/"
+            chmod +x "dist/$platform"/ffmpeg*
+            ./scripts/package-release.sh "$platform" "$VERSION"
+          done
+          ./scripts/package-source.sh "$VERSION"
+          (cd release && sha256sum -- *.tar.gz *.zip *.tar.xz >SHA256SUMS)
+          ./scripts/release-notes.sh "$VERSION" >release-notes.md
+          ls -l release
+          cat release-notes.md
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: |
+            release/*
+            release-notes.md
+          retention-days: 14
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="rerinku-ffmpeg $VERSION (FFmpeg $(sed -n 's/^FFMPEG_VERSION=//p' packaging/versions.env))"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            # A re-run of the same tag: replace the files, keep the release.
+            gh release upload "$VERSION" release/* --clobber
+            gh release edit "$VERSION" --title "$title" --notes-file release-notes.md
+          else
+            gh release create "$VERSION" release/* --verify-tag --title "$title" --notes-file release-notes.md
+          fi

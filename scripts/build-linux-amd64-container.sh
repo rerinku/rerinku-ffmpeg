@@ -5,8 +5,8 @@
 # The Linux FFmpeg links glibc dynamically — the VA drivers and NVIDIA's
 # libraries are the system's, loaded with dlopen — and everything else
 # statically (see build-linux-amd64.sh). The glibc it was linked against is its
-# floor: built on Debian 11 it needs glibc 2.29, below what onboard itself
-# needs, so it runs wherever onboard runs (natively, and in onboard's Debian
+# floor: built on Debian 11 it needs glibc 2.29, below what Rerinku View itself
+# needs, so it runs wherever Rerinku View runs (natively, and in its Debian
 # Docker image).
 #
 #   BASE_IMAGE=debian:bullseye   build image base (decides the glibc floor)
