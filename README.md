@@ -1,6 +1,6 @@
 # rerinku-ffmpeg
 
-Minimal FFmpeg builds for `rerinku-onboard`.
+Minimal FFmpeg builds for `rerinku-view`.
 
 FFmpeg and every dependency are locked in `packaging/versions.env`
 (FFmpeg 9.0.1 "Lei" as of 2026-09-04).
@@ -8,7 +8,7 @@ FFmpeg and every dependency are locked in `packaging/versions.env`
 The executable is trimmed with `--disable-everything` and re-enables only what
 the product actually invokes. The authoritative list of those invocations is
 `scripts/smoke.sh`: it replays the exact command lines from `rerinku-cli`,
-`rerinku-media` and `rerinku-onboard` against a built binary, and the build
+`rerinku-media` and `rerinku-view` against a built binary, and the build
 fails if any of them stops working.
 
 | Product path | Source | FFmpeg components |
@@ -18,11 +18,12 @@ fails if any of them stops working.
 | Audio -> Opus / G.711 RTP (WebRTC) | `rerinku-cli/internal/transcode/opus.go` | pcm_s16le/pcm_alaw/pcm_mulaw/aac demuxers+decoders, libopus, pcm_alaw/pcm_mulaw encoders, aresample, rtp muxer, udp |
 | Audio -> AAC ADTS (HLS recordings) | `rerinku-media/transcode/aac.go` | ogg demuxer + libopus decoder, aac encoder, adts muxer |
 | MJPEG recording -> H.264 fMP4 | `rerinku-media/recording/ffmpeg.go` | libx264, mp4 muxer |
-| Recording thumbnails (H.264/H.265 fMP4 -> JPEG) | `rerinku-onboard/internal/recording/thumbnail.go` | mov demuxer, h264/hevc decoders, scale, mjpeg encoder, image2pipe |
-| Recording storyboards (-> WebP) | `rerinku-onboard/internal/recording/storyboard.go` | tpad/fps/scale/pad/tile filters, libwebp, webp muxer |
-| Device snapshot (raw H.264 -> JPEG) | `rerinku-onboard/internal/device/framegrab.go` | h264 demuxer/decoder, mjpeg encoder |
+| Recording thumbnails (H.264/H.265 fMP4 -> JPEG) | `rerinku-view/internal/recording/thumbnail.go` | mov demuxer, h264/hevc decoders, scale, mjpeg encoder, image2pipe |
+| Recording storyboards (-> WebP) | `rerinku-view/internal/recording/storyboard.go` | tpad/fps/scale/pad/tile filters, libwebp, webp muxer |
+| Device snapshot (raw H.264 -> JPEG) | `rerinku-view/internal/device/framegrab.go` | h264 demuxer/decoder, mjpeg encoder |
 | UVC USB microphone capture | `rerinku-cli/internal/uvc/audio_linux.go` | alsa input device (static alsa-lib), pcm_s16le encoder + muxer |
 | On-device analytics decode (hardware first) | `rerinku-media/transcode/rawvideo.go`, `hwaccel.go` | h264/hevc decoders, rawvideo encoder+muxer; hardware builds add `h264/hevc_vaapi` + `scale_vaapi`, `h264/hevc_nvdec`, `h264/hevc_d3d11va` or `h264/hevc_videotoolbox`, and `hwdownload` |
+| Live H.265 -> H.264 for browsers without H.265 | `rerinku-media/transcode/h264.go`, `hwencode.go` | hevc demuxer/decoder, libx264, h264_metadata + dump_extra bsfs; Linux hardware builds add the `h264_vaapi` and `h264_nvenc` encoders and `hwupload` |
 
 ## Build
 
@@ -33,14 +34,25 @@ fails if any of them stops working.
 ./scripts/build-macos.sh                  # dist/darwin-arm64/ffmpeg (or darwin-amd64)
 ```
 
-One executable per platform. `rerinku-onboard` embeds it (the native release
+One executable per platform. `rerinku-view` embeds it (the native release
 and the Docker image alike) and seeds it into `~/.rerinku/bin/ffmpeg` on every
 start; the server never uses a system ffmpeg.
+
+### Hardware encoding (Linux)
+
+Live transcoding (a browser that cannot decode a camera's H.265 gets an H.264
+copy) encodes on the GPU when it can: the Linux build carries `h264_vaapi`
+(Intel, AMD) and `h264_nvenc` (NVIDIA, through the same nv-codec-headers). With
+a VA-API decoder the pictures never leave the GPU (decode, `scale_vaapi`,
+encode); software-decoded pictures go up with `hwupload`. `dump_extra`
+repeats SPS/PPS before every keyframe, which the hardware encoders write only
+once. onboard test-encodes each GPU before using its encoder and falls back
+to libx264 when it fails. Windows and macOS still encode with libx264.
 
 ### Hardware decoding
 
 On-device analytics decodes on the GPU first (onboard decides; see
-`rerinku-onboard/internal/videodecode`). Every build carries its platform's
+`rerinku-view/internal/videodecode`). Every build carries its platform's
 API: D3D11VA on Windows and VideoToolbox on macOS, which the OS loads at run
 time, and VA-API (Intel, AMD) plus NVDEC (NVIDIA) on Linux.
 

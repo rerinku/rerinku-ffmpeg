@@ -474,7 +474,17 @@ build_ffmpeg() {
 	local hwaccels=""
 	if [[ "$with_hwaccel" == "1" ]]; then
 		case "$target_os" in
-			linux) hwaccels="h264_vaapi,hevc_vaapi,h264_nvdec,hevc_nvdec"; filters+=",hwdownload,scale_vaapi" ;;
+			# Linux also encodes H.264 on the GPU for live transcoding
+			# (rerinku-media transcode/h264.go): VA-API (Intel, AMD) and NVENC.
+			# Software-decoded pictures reach the VA-API encoder through
+			# hwupload; dump_extra repeats SPS/PPS before every keyframe (the
+			# hardware encoders write them once, a joining viewer needs them).
+			linux)
+				hwaccels="h264_vaapi,hevc_vaapi,h264_nvdec,hevc_nvdec"
+				filters+=",hwdownload,hwupload,scale_vaapi"
+				encoders+=",h264_vaapi,h264_nvenc"
+				bsfs+=",dump_extradata" # runs as dump_extra
+				;;
 			windows) hwaccels="h264_d3d11va,hevc_d3d11va"; filters+=",hwdownload" ;;
 			darwin) hwaccels="h264_videotoolbox,hevc_videotoolbox"; filters+=",hwdownload" ;;
 		esac
@@ -552,7 +562,7 @@ build_ffmpeg() {
 	fi
 	if [[ "$with_hwaccel" == "1" ]]; then
 		case "$target_os" in
-			linux) configure_args+=(--enable-vaapi --enable-ffnvcodec --enable-cuda --enable-nvdec) ;;
+			linux) configure_args+=(--enable-vaapi --enable-ffnvcodec --enable-cuda --enable-nvdec --enable-nvenc) ;;
 			# Both load their system DLLs at run time (LoadLibrary), so the
 			# executable still imports only what it did before.
 			windows) configure_args+=(--enable-d3d11va) ;;

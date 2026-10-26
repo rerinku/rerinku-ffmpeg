@@ -293,6 +293,24 @@ run_pipe_case grab-h264-raw is_jpeg grab.jpg "$fixtures/video.h264" -- \
 run_pipe_case grab-hevc-raw is_jpeg grab-hevc.jpg "$fixtures/video.hevc" -- \
 	-f hevc -i pipe:0 -frames:v 1 -q:v 5 -f image2pipe -vcodec mjpeg pipe:1
 
+# --- hardware H.264 encoders (live transcoding on the GPU) ---------------------
+# Linux builds carry h264_vaapi and h264_nvenc; running them needs a GPU, so
+# only their presence is checked here (rerinku-view's probe test-encodes).
+if [[ "$(uname -s)" == "Linux" ]] && "$ffmpeg" -hide_banner -hwaccels 2>/dev/null | grep -q '^vaapi$'; then
+	hw_missing=()
+	for enc in h264_vaapi h264_nvenc; do
+		"$ffmpeg" -hide_banner -encoders 2>/dev/null | grep -q " $enc " || hw_missing+=("$enc")
+	done
+	if ((${#hw_missing[@]} == 0)); then
+		pass=$((pass + 1))
+		report PASS hw-h264-encoders 0 "h264_vaapi h264_nvenc"
+	else
+		fail=$((fail + 1))
+		failed_names+=(hw-h264-encoders)
+		report FAIL hw-h264-encoders 0 "missing: ${hw_missing[*]}"
+	fi
+fi
+
 # --- rerinku-media/transcode/rawvideo.go: raw stream -> yuv420p frames --------
 # Continuous decode for on-device analytics: fixed-size I420 frames on stdout
 # (every picture; the host samples by wall clock). No -fflags nobuffer: it
