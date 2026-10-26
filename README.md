@@ -27,52 +27,49 @@ fails if any of them stops working.
 ## Build
 
 ```sh
-./scripts/build-linux-amd64.sh      # dist/linux-amd64/ffmpeg     (static, software decoding)
-./scripts/build-linux-amd64-hw.sh   # dist/linux-amd64-hw/ffmpeg  (VA-API + NVDEC, needs docker)
-./scripts/build-windows-amd64.sh    # dist/windows-amd64/ffmpeg.exe (D3D11VA)
-./scripts/build-macos.sh            # dist/darwin-arm64/ffmpeg (VideoToolbox; or darwin-amd64)
+./scripts/build-linux-amd64-container.sh  # dist/linux-amd64/ffmpeg   (release build, needs docker)
+./scripts/build-linux-amd64.sh            # dist/linux-amd64/ffmpeg   (same, against this host's glibc)
+./scripts/build-windows-amd64.sh          # dist/windows-amd64/ffmpeg.exe
+./scripts/build-macos.sh                  # dist/darwin-arm64/ffmpeg (or darwin-amd64)
 ```
 
-Linux output is one fully static executable (glibc linked in). macOS output
-statically links the codec libraries and only dynamically links Apple system
-libraries. `rerinku-onboard` embeds the matching platform build and seeds it
-into `~/.rerinku/bin/ffmpeg` on every start; the server never uses a system
-ffmpeg.
+One executable per platform. `rerinku-onboard` embeds it (the native release
+and the Docker image alike) and seeds it into `~/.rerinku/bin/ffmpeg` on every
+start; the server never uses a system ffmpeg.
 
 ### Hardware decoding
 
 On-device analytics decodes on the GPU first (onboard decides; see
-`rerinku-onboard/internal/videodecode`). Windows (D3D11VA) and macOS
-(VideoToolbox) builds carry their API by default: the OS loads it at run time,
-the link does not change.
+`rerinku-onboard/internal/videodecode`). Every build carries its platform's
+API: D3D11VA on Windows and VideoToolbox on macOS, which the OS loads at run
+time, and VA-API (Intel, AMD) plus NVDEC (NVIDIA) on Linux.
 
-Linux needs the system's VA-API drivers (radeonsi, iHD, i965) and NVIDIA's
-`libcuda`/`libnvcuvid`, loaded with `dlopen`, which a fully static glibc cannot
-do. So the hardware build is a second variant, `linux-amd64-hw`: glibc (and
-only glibc) linked dynamically, libva/libdrm built from source and linked in
-statically, NVDEC through header-only nv-codec-headers 11.1 (NVIDIA drivers
-from 470.57). `build-linux-amd64-hw.sh` builds it in a Debian 11 container
-(`packaging/linux-hw.Dockerfile`), so it needs glibc 2.31 or newer (Ubuntu
-20.04+, Debian 11+, RHEL 9+); the build prints the glibc floor and fails if
-anything but glibc is linked dynamically. onboard embeds both Linux builds and
-seeds the hardware one only where it starts, the static one everywhere else
-(musl, older glibc).
+On Linux the VA drivers (radeonsi, iHD, i965) and NVIDIA's
+`libcuda`/`libnvcuvid` are the system's, loaded with `dlopen`, which a fully
+static glibc cannot do. So the Linux executable links glibc — and only glibc —
+dynamically; x264, opus, libwebp, alsa-lib, libva and libdrm (built from
+source) are linked in statically, and NVDEC comes through header-only
+nv-codec-headers 11.1 (NVIDIA drivers from 470.57). The glibc it is linked
+against is its floor, so releases are built in a Debian 11 container
+(`build-linux-amd64-container.sh`, `packaging/linux-build.Dockerfile`): glibc
+2.29, below what onboard needs itself. The build prints the floor and fails if
+anything but glibc is linked dynamically. A build made directly on a newer
+host works there but needs that host's glibc.
 
 Switches:
 
 | Variable | Effect |
 |---|---|
 | `WITH_X265=1` | Add the libx265 H.265 **encoder** (+5 MB). Decoding H.265 never needs it: the native `hevc` decoder is always built. Needs `libstdc++-<gccver>-dev`. |
-| `WITH_HWACCEL=0/1` | Hardware decoding APIs. Default on for Windows and macOS; on Linux `1` selects the `-hw` variant (prefer `build-linux-amd64-hw.sh`, which builds it in the old-glibc container). |
+| `WITH_HWACCEL=0` | Leave out the hardware decoding APIs (default on). |
 | `WITH_ALSA=0` | Drop the `alsa` input device (default on: built from a static alsa-lib). Without it UVC cameras with a USB microphone go video-only, and because the device still advertises audio, WebRTC start waits 8 s for the missing audio track. |
 | `DISABLE_ASM=1` | No assembly (only for hosts without `nasm`; several times slower) |
 | `SMOKE=0` | Skip the functional smoke test after the build |
 | `FORCE_SMOKE=1` | Re-run the smoke test even when build inputs are unchanged |
 | `JOBS=n` | Parallelism |
 
-Switches are reflected in the variant name (`linux-amd64-hw`, `linux-amd64-x265`, `linux-amd64-noalsa`, ...).
+Switches are reflected in the variant name (`linux-amd64-x265`, `linux-amd64-noalsa`, `linux-amd64-nohwaccel`, ...).
 Dependencies are rebuilt automatically when their configure arguments change.
-The static Linux build fails if the result is not fully statically linked.
 `BUILD_ROOT` moves sources, objects and dependencies elsewhere (the container
 build uses `.build/container-<image>` so host-built libraries never leak newer
 glibc symbols in).
@@ -102,9 +99,9 @@ what is still on the table.
 ## Notes
 
 - `libx264` is GPL, so the resulting binary is GPL. `libx265` is GPL too.
-- The glibc static build may warn about `getaddrinfo`; the product only ever
-  targets numeric loopback addresses, so this is harmless. A musl build in a
-  container is the portable long-term answer (see the optimisation doc).
+- Linux no longer has a fully static build: it could not load the system's
+  GPU drivers. musl systems (Alpine) are therefore not supported; onboard's
+  Docker image is Debian-based for the same reason.
 - H.265 support in this binary means: decode for thumbnails, storyboards,
   snapshots and browser transcoding. Encoding to H.265 is an opt-in variant.
 

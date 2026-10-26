@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # Build the trimmed FFmpeg for the selected native platform.
 #
-# Linux output is fully static (including glibc). macOS output statically links
-# the codec libraries while retaining the normal dependency on Apple system
-# libraries. In both cases rerinku-onboard embeds the executable and seeds it
-# into ~/.rerinku/bin at runtime.
+# One executable per platform; rerinku-onboard embeds it and seeds it into
+# ~/.rerinku/bin at runtime. Every platform decodes on the GPU first
+# (WITH_HWACCEL, default on): Windows through D3D11VA and macOS through
+# VideoToolbox, which the system loads at run time; Linux through VA-API
+# (Intel, AMD) and NVDEC (NVIDIA).
 #
-# Hardware decoding (WITH_HWACCEL): Windows gets D3D11VA and macOS
-# VideoToolbox — the system loads them, nothing changes in the link. Linux gets
-# VA-API (Intel, AMD) and NVDEC (NVIDIA) in a separate variant
-# (dist/linux-amd64-hw): the VA drivers and NVIDIA's libraries are the
-# system's, loaded with dlopen, which a fully static glibc cannot do. That
-# variant links glibc (and only glibc) dynamically; libva and libdrm are
-# linked in statically. Build it in an old-glibc container with
-# scripts/build-linux-amd64-hw.sh so it runs on older distributions.
+# Linux links glibc — and only glibc — dynamically: the VA drivers and
+# NVIDIA's libraries are the system's, loaded with dlopen, which a fully static
+# glibc cannot do. Everything else (x264, opus, libwebp, alsa-lib, libva,
+# libdrm) is linked in statically, so the executable needs nothing on the
+# machine but glibc. The glibc it was linked against is its floor: release
+# builds come from the Debian 11 container of build-linux-amd64-container.sh.
+# macOS statically links the codec libraries and keeps the normal dependency on
+# Apple system libraries; Windows imports only Windows system DLLs.
 #
 # Switches (environment variables, all default to 0 unless noted):
 #   WITH_X265=1     add the libx265 H.265 *encoder* (+~5 MB; decoding H.265
@@ -22,8 +23,7 @@
 #                   USB microphone capture audio through "-f alsa"; without it
 #                   the SDK falls back to video-only and WebRTC start waits
 #                   for the announced audio track to time out)
-#   WITH_HWACCEL=1  hardware decoding APIs (default 1 on Windows and macOS,
-#                   0 on Linux where it selects the -hw variant, see above)
+#   WITH_HWACCEL=0  leave out the hardware decoding APIs (default 1)
 #   DISABLE_ASM=1   drop all assembly (only for toolchains without nasm)
 #   SMOKE=0         skip scripts/smoke.sh after the build (default 1)
 #   FORCE_SMOKE=1   rerun validation even when the cached binary is current
@@ -43,7 +43,7 @@ case "$build_platform" in
 		target_os=linux
 		target_arch=amd64
 		default_with_alsa=1
-		default_with_hwaccel=0
+		default_with_hwaccel=1
 		default_cc=gcc
 		;;
 	darwin-arm64|darwin-amd64)
@@ -74,10 +74,13 @@ jobs="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu
 with_x265="${WITH_X265:-0}"
 with_alsa="${WITH_ALSA:-$default_with_alsa}"
 with_hwaccel="${WITH_HWACCEL:-$default_with_hwaccel}"
-# Linux hardware decoding changes the link (glibc dynamic) and adds libva,
-# libdrm and the NVDEC headers; the other platforms only enable FFmpeg code.
+# Linux links glibc dynamically (see the top), so its static libraries are
+# position-independent; its hardware decoding also needs libva, libdrm and the
+# NVDEC headers built here. The other platforms only enable FFmpeg code.
+linux=0
+[[ "$target_os" == "linux" ]] && linux=1
 linux_hw=0
-[[ "$target_os" == "linux" && "$with_hwaccel" == "1" ]] && linux_hw=1
+[[ "$linux" == "1" && "$with_hwaccel" == "1" ]] && linux_hw=1
 disable_asm="${DISABLE_ASM:-0}"
 smoke="${SMOKE:-1}"
 force_smoke="${FORCE_SMOKE:-0}"
@@ -98,20 +101,17 @@ if [[ "$disable_asm" != "1" ]]; then
 fi
 
 variant="$build_platform"
-[[ "$linux_hw" == "1" ]] && variant+="-hw"
+[[ "$with_hwaccel" != "1" ]] && variant+="-nohwaccel"
 [[ "$with_x265" == "1" ]] && variant+="-x265"
 [[ "$with_alsa" != "1" ]] && variant+="-noalsa"
 # Only Linux ever has ALSA, so keep the canonical path exactly
 # darwin-<arch> / windows-<arch> there.
 [[ "$target_os" != "linux" ]] && variant="${variant%-noalsa}"
 
-# The -hw variant compiles its dependencies position-independent (it links a
-# PIE against the dynamic glibc), so it keeps them in a prefix of its own.
 dep_platform="$build_platform"
-[[ "$linux_hw" == "1" ]] && dep_platform+="-hw"
 # BUILD_ROOT separates builds made with different toolchains (the old-glibc
-# container of build-linux-amd64-hw.sh): sources are unpacked and compiled
-# there; downloads (DOWNLOAD_DIR) and dist/ stay shared.
+# container of build-linux-amd64-container.sh): sources are unpacked and
+# compiled there; downloads (DOWNLOAD_DIR) and dist/ stay shared.
 build_root="${BUILD_ROOT:-$project_dir/.build}"
 build_dir="$build_root/build/$variant"
 dep_build_dir="$build_root/build/deps-$dep_platform"
@@ -128,7 +128,7 @@ mkdir -p "$build_dir" "$dep_build_dir" "$prefix" "$dist_dir"
 
 export PKG_CONFIG_PATH="$pkgconfig"
 export CFLAGS="-Os -ffunction-sections -fdata-sections"
-if [[ "$linux_hw" == "1" ]]; then
+if [[ "$linux" == "1" ]]; then
 	# Only our own static libraries may be linked: a system .pc found through
 	# the default search path would pull in a shared library next to glibc.
 	export PKG_CONFIG_LIBDIR="$pkgconfig"
@@ -217,7 +217,7 @@ build_x264() {
 		--chroma-format=420
 	)
 	[[ "$asm_enabled" != "1" ]] && configure_args+=(--disable-asm)
-	[[ "$linux_hw" == "1" ]] && configure_args+=(--enable-pic)
+	[[ "$linux" == "1" ]] && configure_args+=(--enable-pic)
 	# x264 does not derive the compiler from --host; it needs --cross-prefix.
 	configure_args+=("${host_args[@]}")
 	[[ -n "$cross_prefix" ]] && configure_args+=(--cross-prefix="$cross_prefix")
@@ -443,14 +443,11 @@ build_ffmpeg() {
 		# are what --enable-network + the RTP/UDP protocols link against.
 		extra_ldflags="-static -L$prefix/lib -Wl,--gc-sections"
 		extra_libs="-lm -lws2_32 -lbcrypt"
-	elif [[ "$linux_hw" == "1" ]]; then
-		# glibc stays dynamic (dlopen of the VA drivers and NVIDIA's
+	else
+		# Linux: glibc stays dynamic (dlopen of the VA drivers and NVIDIA's
 		# libraries needs it); libgcc is linked in so glibc is the only
 		# shared dependency.
 		extra_ldflags="-L$prefix/lib -Wl,--gc-sections -static-libgcc"
-		extra_libs="-lpthread -lm -ldl"
-	else
-		extra_ldflags="-static -L$prefix/lib -Wl,--gc-sections"
 		extra_libs="-lpthread -lm -ldl"
 	fi
 
@@ -529,7 +526,9 @@ build_ffmpeg() {
 		if [[ "$target_os" == "darwin" ]]; then
 			extra_libs+=" -lc++"
 		else
-			extra_libs+=" -lstdc++"
+			# The archive by name: a plain -lstdc++ would pick the shared
+			# library on Linux, where glibc must stay the only shared one.
+			extra_libs+=" -l:libstdc++.a"
 		fi
 		# x265 is C++: the static link needs libstdc++.a, which Debian keeps in
 		# libstdc++-<ver>-dev. If the toolchain cannot find it,
@@ -553,7 +552,7 @@ build_ffmpeg() {
 	fi
 	if [[ "$with_hwaccel" == "1" ]]; then
 		case "$target_os" in
-			linux) configure_args+=(--enable-pic --enable-vaapi --enable-ffnvcodec --enable-cuda --enable-nvdec) ;;
+			linux) configure_args+=(--enable-vaapi --enable-ffnvcodec --enable-cuda --enable-nvdec) ;;
 			# Both load their system DLLs at run time (LoadLibrary), so the
 			# executable still imports only what it did before.
 			windows) configure_args+=(--enable-d3d11va) ;;
@@ -567,6 +566,8 @@ build_ffmpeg() {
 		configure_args+=(--disable-avdevice)
 	fi
 	[[ "$asm_enabled" != "1" ]] && configure_args+=(--disable-x86asm)
+	# The static libraries are linked into a PIE next to the dynamic glibc.
+	[[ "$linux" == "1" ]] && configure_args+=(--enable-pic)
 	configure_args+=(
 		--extra-ldflags="$extra_ldflags"
 		--extra-libs="$extra_libs"
@@ -640,7 +641,7 @@ elif [[ "$target_os" == "windows" ]]; then
 	fi
 fi
 
-if [[ "$linux_hw" == "1" ]]; then
+if [[ "$linux" == "1" ]]; then
 	# glibc must be the only shared dependency (no libva/libdrm/libstdc++ from
 	# the build host), and the newest glibc symbol decides where it runs.
 	shared="$(objdump -p "$ffmpeg_bin" | awk '/NEEDED/{print $2}' | sort -u)"
@@ -651,7 +652,7 @@ if [[ "$linux_hw" == "1" ]]; then
 		exit 2
 	fi
 	glibc_floor="$(objdump -T "$ffmpeg_bin" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)"
-	echo "linux-hw: needs ${glibc_floor:-unknown glibc} (shared: $(tr '\n' ' ' <<<"$shared"))"
+	echo "linux: needs ${glibc_floor:-unknown glibc} (shared: $(tr '\n' ' ' <<<"$shared"))"
 fi
 if [[ "$with_hwaccel" == "1" && "$target_os" != "windows" ]]; then
 	# The APIs onboard probes for (`ffmpeg -hwaccels`) must be there.

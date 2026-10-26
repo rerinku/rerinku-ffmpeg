@@ -1,4 +1,4 @@
-# Toolchain for the linux-amd64-hw FFmpeg variant (scripts/build-linux-amd64-hw.sh).
+# Toolchain for the Linux FFmpeg release build (scripts/build-linux-amd64-container.sh).
 # The base decides the oldest glibc the binary runs on; nothing from it ends up
 # in the binary besides that glibc dependency.
 ARG BASE_IMAGE=debian:bullseye
