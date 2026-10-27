@@ -17,9 +17,9 @@ component, change `smoke.sh` first.
 ## Build
 
 ```sh
-make linux-container   # release build in a Debian 11 container (needs docker)
+make linux-container   # release builds, x86-64 and ARM64, in Debian 11 containers (needs docker; ARM64 uses QEMU on x86-64)
 make linux             # against this host's glibc
-make windows           # cross-build with mingw-w64
+make windows           # x64 (mingw-w64) and ARM64 (llvm-mingw, fetched on first use)
 make macos             # on macOS
 make smoke BIN=dist/linux-amd64/ffmpeg
 ```
@@ -32,7 +32,9 @@ releasing.
 | Platform | Output | Notes |
 |---|---|---|
 | Linux x86-64 | `dist/linux-amd64/ffmpeg` | Needs glibc 2.29 or newer when built by `linux-container`. Only glibc is linked dynamically (GPU drivers are loaded with `dlopen`, which a static glibc cannot do); musl/Alpine is not supported |
+| Linux ARM64 | `dist/linux-arm64/ffmpeg` | Same as x86-64; built natively on ARM64, or in the ARM64 container under QEMU on x86-64 (binfmt_misc) |
 | Windows x64 | `dist/windows-amd64/ffmpeg.exe` | Imports only Windows system DLLs |
+| Windows ARM64 | `dist/windows-arm64/ffmpeg.exe` | Built with the llvm-mingw pinned in `versions.env`; imports only Windows system DLLs and the UCRT |
 | macOS | `dist/darwin-arm64/ffmpeg`, `dist/darwin-amd64/ffmpeg` | Codec libraries linked statically |
 
 ### Switches

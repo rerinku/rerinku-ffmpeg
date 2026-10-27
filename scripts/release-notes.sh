@@ -22,7 +22,9 @@ FFmpeg $FFMPEG_VERSION, trimmed and built for Rerinku View. Commit \`${commit:0:
 TEXT
 for entry in \
 	"linux-amd64|tar.gz|Linux x86-64 (glibc 2.29 or newer)" \
+	"linux-arm64|tar.gz|Linux ARM64 (glibc 2.29 or newer)" \
 	"windows-amd64|zip|Windows x64" \
+	"windows-arm64|zip|Windows ARM64" \
 	"darwin-arm64|tar.gz|macOS, Apple silicon" \
 	"darwin-amd64|tar.gz|macOS, Intel"; do
 	IFS='|' read -r platform ext label <<<"$entry"

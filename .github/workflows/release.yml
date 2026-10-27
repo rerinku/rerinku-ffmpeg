@@ -32,8 +32,11 @@ jobs:
       matrix:
         include:
           # Linux is built in a Debian 11 container (glibc 2.29 floor).
-          - { platform: linux-amd64, runner: ubuntu-24.04, target: linux-container }
-          - { platform: windows-amd64, runner: ubuntu-24.04, target: windows }
+          - { platform: linux-amd64, runner: ubuntu-24.04, target: linux-container-amd64 }
+          - { platform: linux-arm64, runner: ubuntu-24.04-arm, target: linux-container-arm64 }
+          - { platform: windows-amd64, runner: ubuntu-24.04, target: windows-amd64 }
+          # llvm-mingw is fetched by the build (pinned in versions.env).
+          - { platform: windows-arm64, runner: ubuntu-24.04, target: windows-arm64 }
           - { platform: darwin-arm64, runner: macos-26, target: macos }
           - { platform: darwin-amd64, runner: macos-26-intel, target: macos }
     steps:
@@ -46,7 +49,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg curl git xz-utils bc
       - name: Install tools (Windows cross-build)
-        if: matrix.platform == 'windows-amd64'
+        if: startsWith(matrix.platform, 'windows-')
         run: |
           sudo apt-get install -y --no-install-recommends \
             build-essential nasm pkg-config cmake ninja-build python3 gcc-mingw-w64-x86-64

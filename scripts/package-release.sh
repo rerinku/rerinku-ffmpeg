@@ -3,7 +3,7 @@
 #
 #   package-release.sh <platform> <tag> [out-dir]      (out-dir defaults to release/)
 #
-# platform: linux-amd64, windows-amd64, darwin-arm64 or darwin-amd64 (the
+# platform: linux-amd64, linux-arm64, windows-amd64, windows-arm64, darwin-arm64 or darwin-amd64 (the
 # directory under dist/ the build left the executable in).
 #
 # The archive rerinku-ffmpeg-<tag>-<platform>.tar.gz (.zip for Windows) holds
@@ -20,9 +20,9 @@ out_dir="${3:-$project_dir/release}"
 source "$project_dir/packaging/versions.env"
 
 case "$platform" in
-	linux-amd64) exe=ffmpeg; archive=tar; os=linux ;;
+	linux-amd64 | linux-arm64) exe=ffmpeg; archive=tar; os=linux ;;
 	darwin-arm64 | darwin-amd64) exe=ffmpeg; archive=tar; os=darwin ;;
-	windows-amd64) exe=ffmpeg.exe; archive=zip; os=windows ;;
+	windows-amd64 | windows-arm64) exe=ffmpeg.exe; archive=zip; os=windows ;;
 	*)
 		echo "unknown platform: $platform" >&2
 		exit 2
@@ -104,8 +104,9 @@ TEXT
 		windows)
 			cat <<'TEXT'
 
-The executable also contains the mingw-w64 C runtime (permissive licenses),
-linked statically, and imports only Windows system DLLs.
+The executable also contains the mingw-w64 C runtime (and, on ARM64, LLVM's
+compiler-rt and libunwind), all under permissive licenses and linked
+statically; it imports only Windows system DLLs.
 TEXT
 			;;
 		darwin)

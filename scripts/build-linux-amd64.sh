@@ -16,6 +16,9 @@
 # macOS statically links the codec libraries and keeps the normal dependency on
 # Apple system libraries; Windows imports only Windows system DLLs.
 #
+# Platforms: linux-amd64 (default), linux-arm64 (on arm64), windows-amd64 and windows-arm64 (cross-built
+# from Linux), darwin-arm64 / darwin-amd64 (on macOS); see the build-*.sh wrappers.
+#
 # Switches (environment variables, all default to 0 unless noted):
 #   WITH_X265=1     add the libx265 H.265 *encoder* (+~5 MB; decoding H.265
 #                   never needs it, the native hevc decoder is always built)
@@ -46,6 +49,19 @@ case "$build_platform" in
 		default_with_hwaccel=1
 		default_cc=gcc
 		;;
+	linux-arm64)
+		# Built natively on an arm64 machine (or in the arm64 container of
+		# build-linux-amd64-container.sh, emulated on an x86-64 host).
+		if [[ "$(uname -m)" != aarch64 ]]; then
+			echo "linux-arm64 builds on an arm64 host; on x86-64 run PLATFORM=arm64 scripts/build-linux-amd64-container.sh" >&2
+			exit 2
+		fi
+		target_os=linux
+		target_arch=arm64
+		default_with_alsa=1
+		default_with_hwaccel=1
+		default_cc=gcc
+		;;
 	darwin-arm64|darwin-amd64)
 		target_os=darwin
 		target_arch="${build_platform#darwin-}"
@@ -63,6 +79,17 @@ case "$build_platform" in
 		default_with_hwaccel=1
 		cross_prefix=x86_64-w64-mingw32-
 		default_cc="${cross_prefix}gcc"
+		;;
+	windows-arm64)
+		# Windows on ARM, cross-compiled with the pinned llvm-mingw
+		# (scripts/fetch-llvm-mingw.sh; Debian has no aarch64 mingw-w64 GCC).
+		target_os=windows
+		target_arch=arm64
+		default_with_alsa=0
+		default_with_hwaccel=1
+		cross_prefix=aarch64-w64-mingw32-
+		PATH="$("$project_dir/scripts/fetch-llvm-mingw.sh")/bin:$PATH"
+		default_cc="${cross_prefix}clang"
 		;;
 	*)
 		echo "unsupported native build platform: $build_platform" >&2
@@ -281,6 +308,9 @@ build_opus() {
 		--disable-doc
 		--disable-extra-programs
 	)
+	# NEON is part of every arm64 CPU, so Opus needs no run-time detection;
+	# it has none for Windows on ARM and refuses to build with it on.
+	[[ "$build_platform" == "windows-arm64" ]] && configure_args+=(--disable-rtcd)
 	configure_args+=("${host_args[@]}")
 	local hash
 	hash="$(dep_hash "$OPUS_VERSION" "$CFLAGS" "${configure_args[@]}")"
@@ -391,6 +421,10 @@ build_libdrm() {
 	dep_mark libdrm "$hash"
 }
 
+# Debian's multiarch directory, where the distribution keeps the VA drivers.
+multiarch=x86_64-linux-gnu
+[[ "$target_arch" == arm64 ]] && multiarch=aarch64-linux-gnu
+
 build_libva() {
 	# The DRM backend only (FFmpeg opens the render node itself); no X11,
 	# GLX or Wayland. driverdir is just the compiled-in default: Rerinku
@@ -402,7 +436,7 @@ build_libva() {
 		--buildtype=minsize
 		--default-library=static
 		-Db_staticpic=true
-		-Ddriverdir=/usr/lib/x86_64-linux-gnu/dri:/usr/lib64/dri:/usr/lib/dri:/usr/local/lib/dri
+		-Ddriverdir="/usr/lib/$multiarch/dri:/usr/lib64/dri:/usr/lib/dri:/usr/local/lib/dri"
 		-Dwith_x11=no -Dwith_glx=no -Dwith_wayland=no -Dwith_win32=no
 		-Denable_docs=false
 	)

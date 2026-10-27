@@ -14,8 +14,9 @@ file "$binary" | cut -c1-160
 if command -v ldd >/dev/null 2>&1; then
 	ldd "$binary" 2>&1 | head -5 || true
 fi
+# The host's size(1) does not read every target's format (ARM64 PE).
 if command -v size >/dev/null 2>&1; then
-	size "$binary"
+	size "$binary" 2>/dev/null || true
 fi
 if command -v xz >/dev/null 2>&1; then
 	printf 'xz -9 compressed: %s bytes\n' "$(xz -9 -c "$binary" | wc -c)"
